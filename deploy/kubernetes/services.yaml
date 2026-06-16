@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: frontend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster-webserver-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: dagster-webserver
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: dagster-webserver
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: postgresql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: clickhouse
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8123
+      targetPort: 8123
+      protocol: TCP
+      name: http
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP
+      name: native
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: clickhouse
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: elasticsearch
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9200
+      targetPort: 9200
+      protocol: TCP
+      name: http
+    - port: 9300
+      targetPort: 9300
+      protocol: TCP
+      name: transport
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: elasticsearch
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: redis
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-service
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: rabbitmq
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5672
+      targetPort: 5672
+      protocol: TCP
+      name: amqp
+    - port: 15672
+      targetPort: 15672
+      protocol: TCP
+      name: management
+  selector:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: rabbitmq

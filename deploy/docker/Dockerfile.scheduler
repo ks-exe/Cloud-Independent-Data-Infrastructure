@@ -1,0 +1,73 @@
+# =============================================================================
+# Dagster Daemon (Scheduler) - Production Dockerfile
+# Cloud-Independent Data Infrastructure Platform
+# =============================================================================
+# Build: docker build -f deploy/docker/Dockerfile.scheduler -t cdp-scheduler .
+# Run:   docker run cdp-scheduler
+# =============================================================================
+# Runs the dagster-daemon process responsible for schedule ticks and run monitoring.
+
+# ---------------------------------------------------------------------------
+# Stage 1: Install Python dependencies
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy dependency specification and install
+COPY pyproject.toml ./
+RUN pip install --prefix=/install .
+
+# ---------------------------------------------------------------------------
+# Stage 2: Production runtime
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DAGSTER_HOME=/opt/dagster/dagster_home
+
+WORKDIR /app
+
+# Install runtime system dependencies only
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY backend/ ./backend/
+COPY pyproject.toml ./
+
+# Create Dagster home directory and configuration
+RUN mkdir -p /opt/dagster/dagster_home
+
+# Copy Dagster workspace configuration
+COPY deploy/docker/dagster/ /opt/dagster/dagster_home/
+
+# Create non-root user
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    chown -R appuser:appuser /app && \
+    chown -R appuser:appuser /opt/dagster
+
+USER appuser
+
+# Health check — verify dagster-daemon is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD dagster-daemon health-check || exit 1
+
+# Run Dagster daemon
+CMD ["dagster-daemon", "run"]

@@ -1,0 +1,76 @@
+# =============================================================================
+# Celery Worker - Production Dockerfile
+# Cloud-Independent Data Infrastructure Platform
+# =============================================================================
+# Build: docker build -f deploy/docker/Dockerfile.worker -t cdp-worker .
+# Run:   docker run cdp-worker
+# =============================================================================
+# Shares the same base and dependencies as the backend API image.
+
+# ---------------------------------------------------------------------------
+# Stage 1: Install Python dependencies
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy dependency specification and install
+COPY pyproject.toml ./
+RUN pip install --prefix=/install .
+
+# ---------------------------------------------------------------------------
+# Stage 2: Production runtime
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Celery configuration
+    CELERY_APP=backend.app.tasks:celery_app \
+    CELERY_CONCURRENCY=4 \
+    CELERY_LOG_LEVEL=info
+
+WORKDIR /app
+
+# Install runtime system dependencies only
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY backend/ ./backend/
+COPY pyproject.toml ./
+
+# Create non-root user
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# Health check — verify celery worker is responsive
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD celery -A backend.app.tasks:celery_app inspect ping --timeout 5 || exit 1
+
+# Run Celery worker
+CMD ["python", "-m", "celery", \
+     "-A", "backend.app.tasks:celery_app", \
+     "worker", \
+     "--loglevel=info", \
+     "--concurrency=4", \
+     "--without-heartbeat", \
+     "--without-mingle", \
+     "--without-gossip"]

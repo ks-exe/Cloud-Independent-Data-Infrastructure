@@ -1,0 +1,16 @@
+# Grafana Auto-Provisioned Datasource Configuration
+# This file is read by Grafana on startup to automatically configure the Prometheus datasource.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"
+      httpMethod: POST
+    version: 1

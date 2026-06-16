@@ -1,0 +1,344 @@
+version: "3.9"
+
+# =============================================================================
+# Cloud-Independent Data Infrastructure Platform - Development Stack
+# =============================================================================
+# Start all services: docker-compose up -d
+# Stop all services: docker-compose down
+# Reset volumes:     docker-compose down -v
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Application Services
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Backend API - FastAPI application
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.backend
+    container_name: cdp-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@postgres:5432/cloud_data_platform
+      REDIS_URL: redis://:redis_password@redis:6379/0
+      RABBITMQ_URL: amqp://platform_user:rabbitmq_password@rabbitmq:5672/
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse_password
+      ELASTICSEARCH_URL: http://elastic:elastic_password@elasticsearch:9200
+      DAGSTER_API_URL: http://dagster-webserver:3000
+      SECRET_KEY: dev-secret-key-change-in-production
+      ENCRYPTION_KEY: dev-encryption-key-change-in-production
+      AIR_GAPPED_MODE: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Frontend - React application served via NGINX
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.frontend
+    container_name: cdp-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Celery Worker - Async task processing
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.worker
+    container_name: cdp-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@postgres:5432/cloud_data_platform
+      REDIS_URL: redis://:redis_password@redis:6379/0
+      RABBITMQ_URL: amqp://platform_user:rabbitmq_password@rabbitmq:5672/
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse_password
+      ELASTICSEARCH_URL: http://elastic:elastic_password@elasticsearch:9200
+      DAGSTER_API_URL: http://dagster-webserver:3000
+      SECRET_KEY: dev-secret-key-change-in-production
+      ENCRYPTION_KEY: dev-encryption-key-change-in-production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "backend.app.tasks:celery_app", "inspect", "ping", "--timeout", "5"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Dagster Scheduler - Pipeline scheduling daemon
+  # ---------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.scheduler
+    container_name: cdp-scheduler
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@postgres:5432/cloud_data_platform
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_PORT: "5432"
+      DAGSTER_POSTGRES_USER: platform_user
+      DAGSTER_POSTGRES_PASSWORD: platform_password
+      DAGSTER_POSTGRES_DB: dagster
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "dagster-daemon", "health-check"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # ===========================================================================
+  # Infrastructure Services
+  # ===========================================================================
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - Primary metadata and RBAC database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16.1-alpine
+    container_name: cdp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: platform_user
+      POSTGRES_PASSWORD: platform_password
+      POSTGRES_DB: cloud_data_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/docker/init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform_user -d cloud_data_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # ClickHouse - Lineage events and analytical queries
+  # ---------------------------------------------------------------------------
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1.5
+    container_name: cdp-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: lineage
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse_password
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./deploy/docker/clickhouse-config:/etc/clickhouse-server/config.d
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis - Cache, rate limiting, token blacklist
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2.4-alpine
+    container_name: cdp-redis
+    restart: unless-stopped
+    command: redis-server --requirepass redis_password --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ - Message broker for Celery task queue
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3.13.0-management-alpine
+    container_name: cdp-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: platform_user
+      RABBITMQ_DEFAULT_PASS: rabbitmq_password
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Elasticsearch - Structured log storage and rapid retrieval
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: cdp-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=elastic_password
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:elastic_password http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Dagster - Pipeline orchestration engine
+  # ---------------------------------------------------------------------------
+  dagster-webserver:
+    image: dagster/dagster-k8s:1.5.14
+    container_name: cdp-dagster-webserver
+    restart: unless-stopped
+    entrypoint:
+      - dagster-webserver
+      - -h
+      - "0.0.0.0"
+      - -p
+      - "3000"
+      - -w
+      - workspace.yaml
+    environment:
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_PORT: "5432"
+      DAGSTER_POSTGRES_USER: platform_user
+      DAGSTER_POSTGRES_PASSWORD: platform_password
+      DAGSTER_POSTGRES_DB: dagster
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/docker/dagster:/opt/dagster/dagster_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dagster-daemon:
+    image: dagster/dagster-k8s:1.5.14
+    container_name: cdp-dagster-daemon
+    restart: unless-stopped
+    entrypoint:
+      - dagster-daemon
+      - run
+    environment:
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_PORT: "5432"
+      DAGSTER_POSTGRES_USER: platform_user
+      DAGSTER_POSTGRES_PASSWORD: platform_password
+      DAGSTER_POSTGRES_DB: dagster
+    volumes:
+      - ./deploy/docker/dagster:/opt/dagster/dagster_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Prometheus - Metrics collection
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: cdp-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/grafana/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Grafana - Dashboards and visualization
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: cdp-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: grafana_password
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deploy/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+  rabbitmq_data:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: cdp-network

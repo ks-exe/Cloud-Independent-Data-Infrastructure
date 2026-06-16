@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-webserver
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: dagster-webserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloud-data-platform
+      app.kubernetes.io/component: dagster-webserver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloud-data-platform
+        app.kubernetes.io/component: dagster-webserver
+    spec:
+      serviceAccountName: platform-dagster
+      containers:
+        - name: dagster-webserver
+          image: cloud-data-platform/dagster:latest
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-webserver"]
+          args:
+            - "-h"
+            - "0.0.0.0"
+            - "-p"
+            - "3000"
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+              name: http
+          envFrom:
+            - configMapRef:
+                name: platform-config
+            - secretRef:
+                name: platform-secrets
+          env:
+            - name: DAGSTER_HOME
+              value: /opt/dagster/dagster_home
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /server_info
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /server_info
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /opt/dagster/dagster_home
+      volumes:
+        - name: dagster-home
+          emptyDir: {}
+      restartPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-daemon
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: dagster-daemon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloud-data-platform
+      app.kubernetes.io/component: dagster-daemon
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloud-data-platform
+        app.kubernetes.io/component: dagster-daemon
+    spec:
+      serviceAccountName: platform-dagster
+      containers:
+        - name: dagster-daemon
+          image: cloud-data-platform/dagster:latest
+          imagePullPolicy: IfNotPresent
+          command: ["dagster-daemon"]
+          args: ["run"]
+          envFrom:
+            - configMapRef:
+                name: platform-config
+            - secretRef:
+                name: platform-secrets
+          env:
+            - name: DAGSTER_HOME
+              value: /opt/dagster/dagster_home
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command:
+                - dagster-daemon
+                - health-check
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: dagster-home
+              mountPath: /opt/dagster/dagster_home
+      volumes:
+        - name: dagster-home
+          emptyDir: {}
+      restartPolicy: Always

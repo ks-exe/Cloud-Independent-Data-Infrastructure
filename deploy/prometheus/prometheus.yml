@@ -1,0 +1,28 @@
+# Prometheus Configuration for Cloud-Independent Data Platform
+# Scrapes platform metrics from the backend API and system-level metrics from Node Exporter.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Backend API metrics endpoint — exposes pipeline execution, duration, failure,
+  # queue size, and retry counters in Prometheus text exposition format.
+  - job_name: "cloud-data-platform-api"
+    metrics_path: "/api/v1/monitoring/metrics"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["backend-api:8000"]
+        labels:
+          service: "backend-api"
+          environment: "production"
+
+  # Node Exporter — system-level metrics (CPU, memory, disk, network).
+  - job_name: "node-exporter"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: "node-exporter"
+          environment: "production"

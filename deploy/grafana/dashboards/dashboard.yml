@@ -1,0 +1,17 @@
+# Grafana Dashboard Provisioning Configuration
+# Tells Grafana where to find pre-configured dashboard JSON files.
+
+apiVersion: 1
+
+providers:
+  - name: "Pipeline Monitoring"
+    orgId: 1
+    folder: "Data Platform"
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

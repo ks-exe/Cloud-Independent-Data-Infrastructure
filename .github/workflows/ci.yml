@@ -1,0 +1,420 @@
+# =============================================================================
+# CI/CD Pipeline - Cloud-Independent Data Infrastructure Platform
+# =============================================================================
+# Validates: Requirements 15.5, 17.4
+# Trigger: push to main, pull requests
+# Stages: lint → unit-tests → property-tests → integration-tests →
+#          frontend-tests → build → publish
+# =============================================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Lint — ruff (Python) + eslint (TypeScript) + mypy (type checking)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run ruff (Python linter)
+        run: ruff check backend/
+
+      - name: Run ruff format check
+        run: ruff format --check backend/
+
+      - name: Run mypy (Python type checking)
+        run: mypy backend/app/ --ignore-missing-imports
+
+      - name: Run eslint (TypeScript linter)
+        working-directory: frontend
+        run: npm run lint
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Unit Tests — pytest with coverage, fail if < 80%
+  # ---------------------------------------------------------------------------
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [lint]
+
+    services:
+      postgres:
+        image: postgres:16.1-alpine
+        env:
+          POSTGRES_USER: platform_user
+          POSTGRES_PASSWORD: platform_password
+          POSTGRES_DB: cloud_data_platform_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U platform_user -d cloud_data_platform_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7.2.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit tests with coverage
+        env:
+          DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@localhost:5432/cloud_data_platform_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-secret-key-for-ci
+          ENCRYPTION_KEY: dGVzdC1lbmNyeXB0aW9uLWtleS0zMg==
+        run: |
+          pytest backend/tests/unit/ \
+            --cov=backend/app \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:coverage-html/ \
+            --cov-report=term-missing \
+            --cov-fail-under=80 \
+            -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-coverage
+          path: |
+            coverage.xml
+            coverage-html/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Property Tests — pytest with hypothesis
+  # ---------------------------------------------------------------------------
+  property-tests:
+    name: Property-Based Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint]
+
+    services:
+      postgres:
+        image: postgres:16.1-alpine
+        env:
+          POSTGRES_USER: platform_user
+          POSTGRES_PASSWORD: platform_password
+          POSTGRES_DB: cloud_data_platform_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U platform_user -d cloud_data_platform_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7.2.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run property-based tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@localhost:5432/cloud_data_platform_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-secret-key-for-ci
+          ENCRYPTION_KEY: dGVzdC1lbmNyeXB0aW9uLWtleS0zMg==
+          HYPOTHESIS_SEED: ${{ github.run_id }}
+        run: |
+          pytest backend/tests/properties/ \
+            -v \
+            --hypothesis-show-statistics
+
+  # ---------------------------------------------------------------------------
+  # Stage 4: Integration Tests — docker-compose test environment
+  # ---------------------------------------------------------------------------
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [unit-tests, property-tests]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Start test infrastructure
+        run: |
+          docker compose -f docker-compose.yml up -d \
+            postgres clickhouse redis rabbitmq elasticsearch
+          # Wait for services to be healthy
+          docker compose -f docker-compose.yml exec -T postgres \
+            pg_isready -U platform_user -d cloud_data_platform || sleep 10
+          sleep 15  # Allow all services to fully initialize
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@localhost:5432/cloud_data_platform
+        run: |
+          cd backend && alembic upgrade head
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://platform_user:platform_password@localhost:5432/cloud_data_platform
+          REDIS_URL: redis://:redis_password@localhost:6379/0
+          CLICKHOUSE_URL: http://default:clickhouse_password@localhost:8123/lineage
+          ELASTICSEARCH_URL: http://elastic:elastic_password@localhost:9200
+          RABBITMQ_URL: amqp://platform_user:rabbitmq_password@localhost:5672/
+          SECRET_KEY: test-secret-key-for-ci
+          ENCRYPTION_KEY: dGVzdC1lbmNyeXB0aW9uLWtleS0zMg==
+        run: |
+          pytest backend/tests/integration/ -v
+
+      - name: Tear down test infrastructure
+        if: always()
+        run: docker compose -f docker-compose.yml down -v
+
+  # ---------------------------------------------------------------------------
+  # Stage 5: Frontend Tests — vitest
+  # ---------------------------------------------------------------------------
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Run frontend coverage
+        working-directory: frontend
+        run: npm run test:coverage
+
+      - name: Upload frontend coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Stage 6: Build — Docker images for all services
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [unit-tests, property-tests, integration-tests, frontend-tests]
+
+    strategy:
+      matrix:
+        include:
+          - image: backend
+            context: .
+            dockerfile: deploy/docker/Dockerfile.backend
+          - image: frontend
+            context: .
+            dockerfile: deploy/docker/Dockerfile.frontend
+          - image: worker
+            context: .
+            dockerfile: deploy/docker/Dockerfile.worker
+          - image: scheduler
+            context: .
+            dockerfile: deploy/docker/Dockerfile.scheduler
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ matrix.image }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-${{ matrix.image }}-
+
+      - name: Build ${{ matrix.image }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # Prevent cache from growing indefinitely
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # ---------------------------------------------------------------------------
+  # Stage 7: Publish — Push images to registry (main branch only)
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish Docker Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        include:
+          - image: backend
+            dockerfile: deploy/docker/Dockerfile.backend
+          - image: frontend
+            dockerfile: deploy/docker/Dockerfile.frontend
+          - image: worker
+            dockerfile: deploy/docker/Dockerfile.worker
+          - image: scheduler
+            dockerfile: deploy/docker/Dockerfile.scheduler
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.image }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,66 @@
+# =============================================================================
+# Cloud-Independent Data Infrastructure Platform
+# =============================================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/build/
+*.tsbuildinfo
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite3
+
+# Secrets
+*.pem
+*.key
+*.cert
+
+# Alembic (keep migration files - they define the database schema)
+# backend/alembic/versions/*.py
+
+# Kiro specs (optional - remove this line if you want specs in the repo)
+# .kiro/

@@ -1,0 +1,77 @@
+# =============================================================================
+# Backend API - Multi-stage production Dockerfile
+# Cloud-Independent Data Infrastructure Platform
+# =============================================================================
+# Build: docker build -f deploy/docker/Dockerfile.backend -t cdp-backend .
+# Run:   docker run -p 8000:8000 cdp-backend
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Install Python dependencies
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+# Prevent Python from writing .pyc files and enable unbuffered output
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy dependency specification and install
+COPY pyproject.toml ./
+RUN pip install --prefix=/install .
+
+# ---------------------------------------------------------------------------
+# Stage 2: Production runtime
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+# Prevent Python from writing .pyc files and enable unbuffered output
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    # Application configuration
+    APP_MODULE=backend.app.main:app \
+    APP_HOST=0.0.0.0 \
+    APP_PORT=8000 \
+    APP_WORKERS=4
+
+WORKDIR /app
+
+# Install runtime system dependencies only
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY backend/ ./backend/
+COPY pyproject.toml ./
+
+# Create non-root user
+RUN groupadd -r appuser && \
+    useradd -r -g appuser -d /app -s /sbin/nologin appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+EXPOSE 8000
+
+# Health check — hits the /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run with uvicorn
+CMD ["python", "-m", "uvicorn", "backend.app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--workers", "4", \
+     "--no-access-log"]

@@ -1,0 +1,103 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: ingress
+  annotations:
+    # NGINX Ingress Controller annotations
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+
+    # Rate limiting at ingress level
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+
+    # WebSocket support
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "DENY" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # CORS
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization,X-CSRF-Token"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - platform.example.com
+      secretName: platform-tls-secret
+  rules:
+    - host: platform.example.com
+      http:
+        paths:
+          # Backend API routes
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+          # Health check endpoint
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+          # WebSocket endpoint for real-time updates
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8000
+          # Dagster UI (restricted access)
+          - path: /dagster
+            pathType: Prefix
+            backend:
+              service:
+                name: dagster-webserver-service
+                port:
+                  number: 3000
+          # Frontend (catch-all, must be last)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
+---
+# TLS Secret template — replace with actual cert and key
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-tls-secret
+  namespace: cloud-data-platform
+  labels:
+    app.kubernetes.io/name: cloud-data-platform
+    app.kubernetes.io/component: tls
+type: kubernetes.io/tls
+data:
+  # Base64-encoded TLS certificate and key — replace before deployment
+  tls.crt: LS0tLS1CRUdJTi... # placeholder
+  tls.key: LS0tLS1CRUdJTi... # placeholder
